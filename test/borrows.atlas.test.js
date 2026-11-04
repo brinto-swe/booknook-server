@@ -5,6 +5,9 @@ import { ObjectId } from "mongodb";
 import { connectDatabase, closeDatabase, withDatabaseTransaction } from "../src/config/database.js";
 import { createBorrowService } from "../src/services/borrowService.js";
 import { safeErrorDetails } from "../src/config/diagnostics.js";
+import { BOOK_INDEXES } from "../src/persistence/bookRepository.js";
+import { BORROW_INDEXES } from "../src/persistence/borrowRepository.js";
+import { RATE_LIMIT_INDEXES, MongoRateLimitStore } from "../src/persistence/rateLimitStore.js";
 import { configureDns } from "../src/config/dns.js";
 
 // Explicit opt-in only; default node --test never loads local credentials or Atlas.
@@ -13,22 +16,26 @@ test("Atlas Borrow transactions: commits, rollback, uniqueness and real contenti
 }, async () => {
   const prefix = `booknook_tx_test_${randomUUID().replaceAll("-", "")}`;
   const created = [];
+  const originalMode = process.env.NODE_ENV;
   let db;
   let stage = "connection";
   let cleanupFailed = false;
   try {
     const { default: dotenv } = await import("dotenv");
     dotenv.config({ quiet: true }); // Runtime loading only; never print configuration.
-    configureDns(); db = await connectDatabase();
-    for (const name of ["books", "borrows"]) {
+    configureDns(); process.env.NODE_ENV = "production"; db = await connectDatabase();
+    for (const name of ["books", "borrows", "rate_limits"]) {
       await db.createCollection(`${prefix}_${name}`); created.push(`${prefix}_${name}`);
     }
-    const books = db.collection(`${prefix}_books`), borrows = db.collection(`${prefix}_borrows`);
+    const books = db.collection(`${prefix}_books`), borrows = db.collection(`${prefix}_borrows`), counters = db.collection(`${prefix}_rate_limits`);
+    stage = "temporary index provisioning";
+    for (const [collection, definitions] of [[books, BOOK_INDEXES], [borrows, BORROW_INDEXES], [counters, RATE_LIMIT_INDEXES]]) await collection.createIndexes(definitions, { maxTimeMS: 10000 });
     let failInsert = false, failRestore = false, ignoreActive = false;
     const isolated = { collection(name) {
-      assert.ok(["books", "borrows"].includes(name));
-      const collection = name === "books" ? books : borrows;
+      assert.ok(["books", "borrows", "rate_limits"].includes(name));
+      const collection = { books, borrows, rate_limits: counters }[name];
       return new Proxy(collection, { get(target, prop) {
+        if (prop === "createIndexes") return () => { throw new Error("Production requests must not create indexes"); };
         if (name === "borrows" && prop === "findOne") return async (filter, options) => ignoreActive && filter.status === "borrowed" ? null : target.findOne(filter, options);
         if (name === "borrows" && prop === "insertOne") return async (...args) => {
           const result = await target.insertOne(...args);
@@ -112,6 +119,16 @@ test("Atlas Borrow transactions: commits, rollback, uniqueness and real contenti
     const history = await service.list({ page: 1, limit: 100 }, first);
     assert.ok(history.borrows.every(r => r.userId === first.id));
     assert.ok(history.borrows.some(r => r.status === "returned"));
+    stage = "shared production rate-limit counters";
+    const firstStore = new MongoRateLimitStore(() => isolated), secondStore = new MongoRateLimitStore(() => isolated);
+    firstStore.init({ windowMs: 60000 }); secondStore.init({ windowMs: 60000 });
+    const increments = await Promise.all(Array.from({ length: 8 }, (_, i) => (i % 2 ? firstStore : secondStore).increment("203.0.113.10")));
+    assert.deepEqual(increments.map(r => r.totalHits).sort((a, b) => a - b), [1, 2, 3, 4, 5, 6, 7, 8]);
+    assert.equal(await counters.countDocuments({}), 1);
+    const counter = await counters.findOne({}); assert.match(counter._id, /^[a-f0-9]{64}$/); assert.ok(counter.resetTime instanceof Date);
+    await counters.updateOne({ _id: counter._id }, { $set: { resetTime: new Date(0) } });
+    assert.equal((await secondStore.increment("203.0.113.10")).totalHits, 1);
+    await firstStore.resetKey("203.0.113.10"); assert.equal(await counters.countDocuments({}), 0);
   } catch (error) {
     console.log(JSON.stringify({ stage, ...safeErrorDetails(error), numericCode: Number.isInteger(error.code) ? error.code : null }));
     // Assertion/driver errors may embed connection info: never forward raw objects.
@@ -127,6 +144,7 @@ test("Atlas Borrow transactions: commits, rollback, uniqueness and real contenti
       }
     }
     try { await closeDatabase(); } catch { cleanupFailed = true; }
+    if (originalMode === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = originalMode;
     if (!cleanupFailed && created.length) console.log("Temporary Atlas fixture collections removed; absence verified.");
     if (cleanupFailed) throw new Error("Temporary Atlas integration collection cleanup needs attention. No driver details logged.");
   }

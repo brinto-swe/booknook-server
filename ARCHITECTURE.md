@@ -4,8 +4,8 @@ JavaScript ES Modules, Express 5, and the MongoDB Native Driver remain the stack
 
 ## Responsibilities
 
-- `src/server.js`: environment loading, configuration validation, DNS setup, database-first startup, HTTP listener, and shutdown.
-- `src/app.js`: Express composition, CORS, JSON parser, routers, then not-found and error middleware.
+- `src/server.js`: local dotenv loading, shared configuration validation, local DNS setup, database-first startup, the sole local HTTP listener, and shutdown. Vercel imports app.js instead.
+- `src/app.js`: named createApp factory plus a default real Express application export, runtime configuration/connection initialization, CORS, JSON parser, routers, then not-found and error middleware. Importing it opens no listener or database connection.
 - `src/config/`: database connection lifecycle, optional development DNS override, and safe diagnostics.
 - `src/routes/`: HTTP method/path declarations and route-specific middleware.
 - `src/controllers/`: translate validated HTTP input to service calls and send responses.
@@ -46,7 +46,7 @@ Book Management, Borrow Management, and the authentication foundation are implem
 
 Better Auth is hosted only by Next.js at `/api/auth/[...all]`. Express verifies its short-lived JWTs using cached public JWKS, EdDSA signature verification, issuer/audience/expiry checks, and trusted `sub`/`email` claims. Identity is attached as `req.user` only after successful verification. The exported auth middleware is not mounted globally; health and the existing public book listing remain public, while details and mutations require authentication; mine=true authenticates only that listing request.
 
-Express startup validates `AUTH_ISSUER`, `AUTH_AUDIENCE`, and `AUTH_JWKS_URL`. CORS remains restricted to `CLIENT_URL` and the existing allowed headers. Helmet supplies API security headers, and a per-process 300-request/minute limiter excludes health. Rate-limited requests use the catalog's JSON `RATE_LIMITED` response with status 429.
+Express startup validates `AUTH_ISSUER`, `AUTH_AUDIENCE`, and `AUTH_JWKS_URL`. CORS remains restricted to `CLIENT_URL` and the existing allowed headers. Helmet supplies API security headers. The 300-request/minute limiter excludes health; development uses memory while production uses shared atomic MongoDB counters. Rate-limited requests use the catalog's JSON `RATE_LIMITED` response with status 429.
 
 ## Book Management
 
@@ -113,13 +113,13 @@ Borrow and return operations now update this same book within MongoDB transactio
 
 ### Indexes and database lifecycle
 
-Reuse getDatabase; no new MongoClient or changes to connection/DNS/startup/shutdown. Index initialization remains lazy, cached per database and retryable after failure:
+Reuse getDatabase; no new MongoClient or changes to connection/DNS/startup/shutdown. Index checks remain lazy, cached per database and retryable after failure. Development creates missing indexes; production only verifies indexes provisioned by scripts/ensure-indexes.js:
 
 - books_latest: { addedAt: -1, _id: -1 }
 - books_category_latest: { category: 1, addedAt: -1, _id: -1 }
 - books_owner_latest: { addedByUserId: 1, addedAt: -1, _id: -1 }
 
-The native _id index handles details. Index initialization occurs before lists/creation; index privileges are required. Collection queries/writes use maxTimeMS:5000. No migration, fake data, new schema validator, or real database test writes are performed.
+The native _id index handles details. Index initialization occurs before lists/creation; index privileges are required. Collection queries/writes use maxTimeMS:5000. Production index metadata reads are bounded at 5 seconds; development creation at 10 seconds. No migration, fake data, new schema validator, or real database test writes are performed.
 
 ## Checks
 
@@ -160,14 +160,14 @@ Only allowlisted fields leave serializeBorrow; dates become ISO UTC strings. Inv
 
 ### Indexes and transactions
 
-Index initialization is lazy before Borrow operations, cached per database, shared for concurrent requests and retryable after failure:
+Index checks are lazy before Borrow operations, cached per database, shared for concurrent requests and retryable after failure. Development creates indexes; production verifies their exact definitions without DDL:
 
 - borrows_active_user_book: unique {userId:1,bookId:1}, partialFilterExpression:{status:"borrowed"}. Only one active loan per user/book; returned loans do not block reborrowing.
 - borrows_user_latest: {userId:1,borrowDate:-1,_id:-1} for current-user history.
 
-Indexes are created before opening transactions. Index-creation permissions are required. Existing duplicate active data causes initialization to fail; it is never ignored or silently modified.
+Indexes are provisioned before production traffic with the explicit operator script; development creates them before opening transactions. Runtime production requires metadata/read/write permissions; the provisioning account needs index-creation permissions. Existing duplicate active data causes initialization to fail; it is never ignored or silently modified.
 
-withDatabaseTransaction in config/database.js starts a session from the existing connected MongoClient, checks/caches transaction-capable topology with sessions, invokes the installed MongoDB driver 7.8.0 withTransaction API with primary reads, snapshot read concern, majority write concern, 5-second max commit time and 15-second transaction/retry budget, then always ends the session. Existing connect/ping/DNS/startup/shutdown behavior is unchanged. No additional client/pool is created. Every operation inside the callback receives the same session; operations run sequentially inside a transaction. Driver-supported transient-transaction and uncertain-commit retries are retained. Callbacks contain only database work and serialization, with no external side effects.
+withDatabaseTransaction in config/database.js starts a session from the existing connected MongoClient, checks/caches transaction-capable topology with sessions, invokes the installed MongoDB driver 7.8.0 withTransaction API with primary reads, snapshot read concern, majority write concern, 5-second max commit time and 15-second transaction/retry budget, then always ends the session. The shared connect/ping lifecycle is retained; request-time initialization supports Vercel and serverless pool limits apply in production. Local DNS/startup/shutdown behavior is retained. No additional client/pool is created. Every operation inside the callback receives the same session; operations run sequentially inside a transaction. Driver-supported transient-transaction and uncertain-commit retries are retained. Callbacks contain only database work and serialization, with no external side effects.
 
 Borrow flow, in one transaction: read/validate book; reject existing active loan; conditionally decrement availability only when >0 and <=total; insert loan with trusted snapshots. The partial unique index also closes races if two same-user requests both passed the precheck. Any insert/validation failure aborts the decrement.
 
@@ -224,3 +224,84 @@ Final Borrow verification results:
 - Live anonymous GET /borrows: 401 UNAUTHORIZED.
 
 No known unresolved Borrow module failures. Full deployed/browser-to-API acceptance is outside this backend phase. npm test remains the pre-existing failing placeholder and no server lint script exists; run the real suite using node --test. Pre-existing package/lockfile edits (including the already-installed Multer dependency) were preserved; this phase installs or uses none of them. No commits, frontend changes, real application fixture records, environment changes or authentication changes were made.
+
+## Vercel production readiness
+
+The deployment targets for this phase are Express on Vercel and the Next.js/Better Auth frontend on Netlify, as explicitly requested by the user. These supersede the earlier deployment-target planning notes.
+
+### Entry point and initialization
+
+src/app.js imports Express and default-exports an actual Express application, matching Vercel's supported native Express entry-point format. Its named createApp factory remains available for isolated tests. No custom serverless wrapper, vercel.json, rewrites, or second listener is introduced. Only src/server.js starts the local listener; it loads dotenv quietly before importing the app, validates configuration, applies the optional development DNS override, connects first, and retains signal-based HTTP/Mongo cleanup.
+
+The default app can be imported without any configuration or network access. On requests, configuration is read/validated at runtime and connectDatabase is awaited. The existing connected client, database, and in-flight connection promise are shared per warm instance; concurrent initialization shares one attempt. Failed attempts close the failed client and clear state so later requests can retry. Connections are not closed at the end of each request. Transaction/session handling and all JWT algorithms, claims, issuer/audience/JWKS behavior are unchanged.
+
+Successful cold-start health requests connect then ping. Failed configuration/initialization returns the existing exact health shape with status 503 and Cache-Control:no-store; normal healthy responses remain status 200. Other initialization failures use the existing fixed SERVICE_UNAVAILABLE JSON error. CORS preflight completes before connection work. Production CLIENT_URL must be an exact HTTPS origin; local HTTP origins remain supported. Request configuration and initialization errors never echo environment values or raw driver errors.
+
+### Production rate limiting and ingress trust
+
+Platform-level Vercel WAF rate limiting was inspected. It requires project firewall configuration, outside this code-only/no-deployment task. Existing MongoDB Atlas is therefore used as the shared store with the already-installed native driver and express-rate-limit. No new package/service credentials are necessary. Platform rules may additionally protect traffic before it reaches the function.
+
+Production means NODE_ENV production or the Vercel runtime flag. The application keeps the established 300 requests per 60 seconds and JSON RATE_LIMITED 429 response; health remains exempt. Production uses rate_limits, a new infrastructure collection containing a SHA-256 counter key, totalHits, and resetTime. A single findOneAndUpdate aggregation pipeline increments/resets each counter using MongoDB's clock. Concurrent first inserts handle the duplicate-key race. Different instances share the same counters. A TTL index removes expired documents, but logical expiration works independently of delayed TTL cleanup. Failures return safe 503 errors; there is no fallback to a per-instance counter. Development retains the existing memory-backed limiter. Middleware is constructed once at app composition, never on each request.
+
+Express trust proxy is explicitly false. No forwarded headers affect Express req.ip or authorization. Only when the server-side VERCEL flag identifies the Vercel runtime does the limiter consume the Vercel-overwritten X-Forwarded-For ingress header. It must contain one valid IP address; missing, malformed, repeated or comma-separated values fail closed. Outside Vercel all forwarded IP headers are ignored and the socket address is used. X-Real-IP is never accepted as an alternative. The existing library's ipKeyGenerator normalizes IPv4-mapped addresses and groups native IPv6 by /56 before hashing, preventing easy address-rotation bypass within that subnet. Additional custom proxies must be reviewed rather than enabling unrestricted trust or accepting arbitrary forwarding chains.
+
+This design follows the [Vercel ingress header contract](https://vercel.com/docs/headers/request-headers) and the installed express-rate-limit 8.7.3 [custom store interface](https://express-rate-limit.mintlify.app/guides/creating-a-store).
+
+### Pool and index management
+
+Production MongoClient options now bound each server's application pool to 10 sockets, minPoolSize 0, maxConnecting 2, maxIdleTimeMS 60000, waitQueueTimeoutMS 5000 and socketTimeoutMS 20000. Existing connection/server-selection timeouts stay 10000. Transaction timeout/retry budget stays 15000 with a 5000 maximum commit time. These are conservative starting limits per instance/server, not a global connection budget; size the Atlas cluster and test Vercel scaling accordingly. Driver monitoring uses additional sockets. Local connection options remain unchanged.
+
+Production requests never create indexes. src/config/indexes.js verifies the required index name, keys, uniqueness, partial filter and TTL definition through bounded metadata reads, cached per database/collection. Missing or incompatible indexes return DATABASE_NOT_READY (503). Failed checks are retryable after provisioning. Development preserves the existing lazy/retryable creation behavior.
+
+Run the explicit command from the backend directory using the intended environment's securely configured database access:
+
+```powershell
+node scripts/ensure-indexes.js
+```
+
+The command quietly loads local dotenv where appropriate, uses the same pool, creates/verifies the three Book indexes, two Borrow indexes and rate_limits_expiry:{resetTime:1},expireAfterSeconds:0, then closes its connection. It never mutates application records, prints credentials, or runs automatically at build/startup/request time. A conflict or duplicate active data stops provisioning; no data repair is attempted. Run this once for each database/environment before traffic. The production runtime account need not have DDL permissions if indexes are provisioned separately.
+
+### Exact deployment configuration
+
+- Backend-only Git repository: Root Directory is its repository root. If importing the parent project instead, Root Directory is booknook-server.
+- Framework preset: Express, native detection.
+- Entry point: src/app.js, default Express app export.
+- Node.js runtime: explicitly choose 24.x in Vercel project settings. The package manifest/scripts/dependencies are unchanged.
+- Build command: no custom override; this JavaScript backend has no compilation step.
+- Install command: automatic npm/lockfile detection; npm ci may be selected for reproducible installation.
+- Output Directory: no custom override; Vercel's Express preset handles output.
+- vercel.json, API-prefix rewrites and custom serverless wrappers: unnecessary.
+- Duration/memory: start with the platform defaults, measure cold starts/load, and retain sufficient headroom for DB/JWKS/index work plus transaction retries. Choose a region near Atlas.
+
+[Vercel Express documentation](https://vercel.com/docs/frameworks/backend/express) supports this file/export arrangement. Actual deployment/build-platform execution was not performed and must be confirmed in an isolated preview.
+
+Required backend configuration names: MONGODB_URI, DB_NAME, CLIENT_URL, AUTH_ISSUER, AUTH_AUDIENCE, AUTH_JWKS_URL. Runtime-provided mode/detection names: NODE_ENV, VERCEL. Local-only configuration: PORT, optional DNS_SERVERS. Test-only: RUN_ATLAS_TRANSACTION_TESTS. No new secret or rate-limit environment variable is introduced. Production/Preview/Development need independent database access and matching canonical frontend/auth origins; the DNS override stays disabled in production. Better Auth/Google secrets and NEXT_PUBLIC_API_URL remain frontend-host environment concerns, not Express configuration.
+
+Remaining deployment prerequisites: provision indexes in the target database, configure canonical Netlify/Vercel origins and auth/JWKS URLs, allow the chosen Vercel/Netlify egress through Atlas network access, verify deployment access protection does not block legitimate API/JWKS requests, and run preview cold/warm/proxy/load acceptance. These are not asserted as configured. No domains, plan settings, static egress addresses or deployment results are invented.
+
+### Changed files and verification
+
+Modified:
+- src/app.js — supported default app export and runtime request readiness.
+- src/server.js — serve that app once locally, reuse shared configuration validation.
+- src/config/database.js — production pool limits; existing lifecycle/transactions retained.
+- src/middleware/security.js — shared production limiter and explicit ingress IP policy.
+- src/persistence/bookRepository.js and borrowRepository.js — shared index verification/provisioning boundary.
+- src/utils/apiError.js — fixed DATABASE_NOT_READY response.
+- test/borrows.atlas.test.js — production-mode pools/index verification and real shared-counter contention coverage, retaining every previous transaction assertion.
+- ARCHITECTURE.md — current runtime, configuration, operational prerequisites and results.
+
+Created:
+- src/config/environment.js — shared runtime/origin/local-port validation.
+- src/config/indexes.js — retryable metadata verification and development creation.
+- src/persistence/rateLimitStore.js — native MongoDB fixed-window store and TTL specification.
+- scripts/ensure-indexes.js — explicit bounded provisioning command.
+- test/serverless.test.js — entry-point, cold-start, retry, health, connection, index, rate/IP and local startup regression tests.
+- test-support/serverlessDatabase.js and serverBootstrapMock.js — isolated synthetic DB/child-bootstrap fixtures; not production imports or routes.
+
+Final validation:
+- node --test: 85 discovered tests, 84 passed, 0 failed, 1 skipped (opt-in Atlas test). Existing Book, Borrow, auth and architecture tests remain unchanged and pass.
+- Explicit Atlas integration: 1 passed, 0 failed, 0 skipped. It used production pool settings, pre-provisioned/verified temporary indexes, preserved transaction/rollback/uniqueness/contention tests, and verified concurrent counters across separate MongoRateLimitStore instances plus logical window expiration. All three temporary fixture collections were dropped and absence verified. No real books, borrows, user data or production rate counters were changed.
+- Syntax checks passed for src/, scripts/, test/, test-support/; git diff --check passed with only ordinary line-ending warnings.
+- The real local bootstrap ran in a child process against mocked MongoDB with synthetic configuration in an empty temporary working directory, served health, created exactly one listener, then gracefully closed HTTP and MongoDB. Existing actual .env values were not displayed or modified.
+- No frontend changes, installed packages, lockfile changes, authentication changes, commits or deployments.

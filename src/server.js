@@ -4,11 +4,11 @@ import { createServer } from "node:http";
 // Suppress dotenv output and never print configuration values or raw errors.
 const environment = dotenv.config({ quiet: true });
 // Import application modules only after environment loading has completed.
-const { createApp } = await import("./app.js");
+const { default: app } = await import("./app.js");
 const { connectDatabase, closeDatabase } = await import("./config/database.js");
 const { configureDns } = await import("./config/dns.js");
 const { logSafeError } = await import("./config/diagnostics.js");
-const { readAuthConfiguration } = await import("./config/auth.js");
+const { readRuntimeConfiguration, readLocalPort } = await import("./config/environment.js");
 let server;
 let shuttingDown = false;
 
@@ -16,29 +16,8 @@ function validateEnvironment() {
   if (environment.error && environment.error.code !== "ENOENT") {
     throw new Error("Environment file could not be loaded.");
   }
-  for (const name of ["MONGODB_URI", "DB_NAME", "CLIENT_URL"]) {
-    if (!process.env[name]?.trim()) throw new Error(`${name} is required.`);
-  }
-  if (!/^mongodb(?:\+srv)?:\/\//.test(process.env.MONGODB_URI)) {
-    throw new Error("MONGODB_URI must be a MongoDB connection string.");
-  }
-  let origin;
-  try {
-    origin = new URL(process.env.CLIENT_URL);
-  } catch {
-    throw new Error("CLIENT_URL must be a valid HTTP or HTTPS origin.");
-  }
-  if (!["http:", "https:"].includes(origin.protocol)
-    || origin.origin !== process.env.CLIENT_URL
-    || origin.username || origin.password) {
-    throw new Error("CLIENT_URL must be an HTTP or HTTPS origin without a path or credentials.");
-  }
-  const port = process.env.PORT === undefined ? 5000 : Number(process.env.PORT);
-  if (!/^\d+$/.test(String(process.env.PORT ?? 5000))
-    || !Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error("PORT must be an integer between 1 and 65535.");
-  }
-  return port;
+  readRuntimeConfiguration();
+  return readLocalPort();
 }
 
 async function shutdown(exitCode = 0) {
@@ -77,11 +56,10 @@ process.once("SIGTERM", () => { void shutdown(); });
 async function start() {
   try {
     const port = validateEnvironment();
-    readAuthConfiguration();
     configureDns();
     await connectDatabase();
     if (shuttingDown) return;
-    server = createServer(createApp());
+    server = createServer(app);
     await new Promise((resolve, reject) => {
       server.once("error", reject);
       server.listen(port, () => {

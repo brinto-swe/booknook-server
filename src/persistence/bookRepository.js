@@ -1,3 +1,4 @@
+import { ensureIndexes } from "../config/indexes.js";
 import { getDatabase } from "../config/database.js";
 
 const projection = {
@@ -5,17 +6,13 @@ const projection = {
   imageUrl: 1, image: 1, totalCopies: 1, availableCopies: 1, addedAt: 1,
   addedByUserId: 1, addedByName: 1, addedByEmail: 1, createdAt: 1, updatedAt: 1,
 };
-const indexPromises = new WeakMap();
+export const BOOK_INDEXES = Object.freeze([
+  { name: "books_latest", key: { addedAt: -1, _id: -1 } },
+  { name: "books_category_latest", key: { category: 1, addedAt: -1, _id: -1 } },
+  { name: "books_owner_latest", key: { addedByUserId: 1, addedAt: -1, _id: -1 } },
+]);
 export function ensureBookIndexes(database = getDatabase()) {
-  if (!indexPromises.has(database)) {
-    const promise = Promise.resolve().then(() => database.collection("books").createIndexes([
-      { name: "books_latest", key: { addedAt: -1, _id: -1 } },
-      { name: "books_category_latest", key: { category: 1, addedAt: -1, _id: -1 } },
-      { name: "books_owner_latest", key: { addedByUserId: 1, addedAt: -1, _id: -1 } },
-    ])).catch(error => { indexPromises.delete(database); throw error; });
-    indexPromises.set(database, promise);
-  }
-  return indexPromises.get(database);
+  return ensureIndexes(database, "books", BOOK_INDEXES);
 }
 export async function findBooks({ page, limit, category, ownerId }) {
   const database = getDatabase();

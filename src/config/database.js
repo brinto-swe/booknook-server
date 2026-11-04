@@ -1,4 +1,5 @@
 import { MongoClient } from "mongodb";
+import { isProductionRuntime } from "./environment.js";
 import { safeErrorDetails } from "./diagnostics.js";
 
 let client;
@@ -19,6 +20,10 @@ export async function connectDatabase() {
       client = new MongoClient(MONGODB_URI, {
         serverSelectionTimeoutMS: 10000,
         connectTimeoutMS: 10000,
+        ...(isProductionRuntime() ? {
+          maxPoolSize: 10, minPoolSize: 0, maxConnecting: 2,
+          maxIdleTimeMS: 60000, waitQueueTimeoutMS: 5000, socketTimeoutMS: 20000,
+        } : {}),
       });
       await client.connect();
       const connectedDatabase = client.db(DB_NAME);

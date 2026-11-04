@@ -23,6 +23,7 @@ const definitions = {
   PAYLOAD_TOO_LARGE: [413, "Request body is too large."],
   UNSUPPORTED_MEDIA_TYPE: [415, "Unsupported request content type or encoding."],
   INTERNAL_ERROR: [500, "Internal server error."],
+  DATABASE_NOT_READY: [503, "Required database indexes must be provisioned before serving requests."],
   SERVICE_UNAVAILABLE: [503, "Service temporarily unavailable."],
 };
 
