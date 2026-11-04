@@ -3,11 +3,12 @@ import cors from "cors";
 import helmet from "helmet";
 import { createApiRateLimiter } from "./middleware/security.js";
 import healthRoutes from "./routes/healthRoutes.js";
-import bookRoutes from "./routes/bookRoutes.js";
+import { createBookRoutes } from "./routes/bookRoutes.js";
+import { createBorrowRoutes } from "./routes/borrowRoutes.js";
 import { notFound } from "./middleware/notFound.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 
-export function createApp() {
+export function createApp({ authenticateMiddleware, borrowService } = {}) {
   const clientUrl = process.env.CLIENT_URL;
   if (!clientUrl) throw new Error("CLIENT_URL is required.");
 
@@ -22,7 +23,8 @@ export function createApp() {
   app.use(express.json({ limit: "100kb" }));
 
   app.use(healthRoutes);
-  app.use(bookRoutes);
+  app.use(createBookRoutes(authenticateMiddleware));
+  app.use(createBorrowRoutes(authenticateMiddleware, borrowService));
   // Mount future business routers here, before the terminal middleware.
   app.use(notFound);
   app.use(errorHandler);

@@ -58,3 +58,29 @@ export async function closeDatabase() {
   client = undefined;
   await connectedClient?.close();
 }
+
+// Reuse the connected client; never create a second pool for transactions.
+const transactionChecks = new WeakMap();
+export async function withDatabaseTransaction(operation) {
+  const connectedDatabase = getDatabase();
+  if (!transactionChecks.has(connectedDatabase)) {
+    const check = connectedDatabase.admin().command({ hello: 1 }, { maxTimeMS: 5000 }).then(hello => {
+      if (!(hello.setName || hello.msg === "isdbgrid") || hello.logicalSessionTimeoutMinutes == null) {
+        const error = new Error("MongoDB transactions are required for inventory operations.");
+        error.code = "TRANSACTIONS_UNAVAILABLE";
+        throw error;
+      }
+    }).catch(error => { transactionChecks.delete(connectedDatabase); throw error; });
+    transactionChecks.set(connectedDatabase, check);
+  }
+  await transactionChecks.get(connectedDatabase);
+  const session = client.startSession();
+  try {
+    return await session.withTransaction(() => operation(connectedDatabase, session), {
+      readPreference: "primary", readConcern: { level: "snapshot" },
+      writeConcern: { w: "majority" }, maxCommitTimeMS: 5000, timeoutMS: 15000,
+    });
+  } finally {
+    await session.endSession();
+  }
+}

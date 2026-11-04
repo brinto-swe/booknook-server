@@ -7,7 +7,7 @@ import { createApp } from "../src/app.js";
 import { connectDatabase, closeDatabase } from "../src/config/database.js";
 import { ensureBookIndexes } from "../src/persistence/bookRepository.js";
 import { serializeBook, validateBookQuery, validateBookId, BOOK_CATEGORIES } from "../src/validators/bookValidators.js";
-import { bookDetailRoutes } from "../src/routes/bookRoutes.js";
+import { createBookRoutes } from "../src/routes/bookRoutes.js";
 import { errorHandler } from "../src/middleware/errorHandler.js";
 
 function book(id, category = "Fiction", addedAt = new Date("2026-11-01T00:00:00Z")) {
@@ -78,6 +78,7 @@ test("read endpoints over HTTP with mocked native MongoDB persistence", async (t
       fail("indexes");
       assert.deepEqual(definitions.map(value => value.key), [
         { addedAt: -1, _id: -1 }, { category: 1, addedAt: -1, _id: -1 },
+        { addedByUserId: 1, addedAt: -1, _id: -1 },
       ]);
     },
     find(filter, options) {
@@ -123,7 +124,7 @@ test("read endpoints over HTTP with mocked native MongoDB persistence", async (t
   // The private router is mounted only in this test harness, never the real app.
   const app = createApp();
   const detail = express();
-  detail.use(bookDetailRoutes);
+  detail.use(createBookRoutes((_req, _res, next) => next()));
   detail.use(errorHandler);
   async function listen(application) {
     const server = application.listen(0, "127.0.0.1");
@@ -215,15 +216,15 @@ test("read endpoints over HTTP with mocked native MongoDB persistence", async (t
     assert.equal((await response.json()).error.code, "INVALID_BOOK_DATA");
     malformed = false;
   });
-  await t.test("mutation routes remain absent", async () => {
+  await t.test("mutation routes require authentication", async () => {
     for (const method of ["POST", "PATCH", "DELETE"]) {
-      const response = await fetch(`${origin}/books`, { method });
-      assert.equal(response.status, 404);
+      const response = await fetch(`${origin}${method === "POST" ? "/books" : "/books/000000000000000000000001"}`, { method });
+      assert.equal(response.status, 401);
     }
   });
-  await t.test("single-book router remains unmounted in the application", async () => {
+  await t.test("single-book router requires authentication in the application", async () => {
     const response = await fetch(`${origin}/books/${documents[0]._id}`);
-    assert.equal(response.status, 404);
-    assert.equal((await response.json()).error.code, "ROUTE_NOT_FOUND");
+    assert.equal(response.status, 401);
+    assert.equal((await response.json()).error.code, "UNAUTHORIZED");
   });
 });
