@@ -1,5 +1,7 @@
 import express from "express";
 import cors from "cors";
+import helmet from "helmet";
+import { createApiRateLimiter } from "./middleware/security.js";
 import healthRoutes from "./routes/healthRoutes.js";
 import bookRoutes from "./routes/bookRoutes.js";
 import { notFound } from "./middleware/notFound.js";
@@ -11,10 +13,12 @@ export function createApp() {
 
   const app = express();
   app.disable("x-powered-by");
+  app.use(helmet());
   app.use(cors({
     origin: clientUrl,
     allowedHeaders: ["Content-Type", "Authorization"],
   }));
+  app.use(createApiRateLimiter());
   app.use(express.json({ limit: "100kb" }));
 
   app.use(healthRoutes);

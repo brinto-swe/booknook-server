@@ -52,6 +52,7 @@ test("architecture HTTP contracts without dotenv or Atlas", async (t) => {
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("cache-control"), "no-store");
     assert.equal(response.headers.get("x-powered-by"), null);
+    assert.equal(response.headers.get("x-content-type-options"), "nosniff");
     assert.deepEqual(await response.json(), { application: "ok", database: "connected" });
     unavailable = true;
     const degraded = await fetch(`${origin}/api/health`);

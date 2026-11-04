@@ -11,6 +11,7 @@ JavaScript ES Modules, Express 5, and the MongoDB Native Driver remain the stack
 - `src/controllers/`: translate validated HTTP input to service calls and send responses.
 - `src/services/`: application operations and database work, independent of Express request/response objects. Health currently demonstrates this boundary.
 - `src/middleware/`: reusable request validation, unmatched-route handling, and centralized error handling.
+- `src/config/auth.js` caches the jose remote JWKS resolver and validates auth URL configuration. `src/middleware/authenticate.js` supplies opt-in JWT verification for future private routers; `security.js` supplies API rate limiting.
 - `src/utils/`: fixed public API error definitions and response helpers.
 - `src/persistence/`: native-driver collection queries and index initialization, using the shared database.
 - `src/validators/`: route input validation and persisted book serialization/invariant checks.
@@ -41,7 +42,11 @@ Apply `requireObjectBody` to future JSON-object mutation routes, then `validate(
 
 Express 5 forwards rejected async middleware/controller promises to the error handler; no async-wrapper dependency is needed. Callback-based asynchronous work must still forward failures with `next(error)`. Mount future routers before `notFound`, and keep the four-argument `errorHandler` last. It delegates if response headers have already been sent.
 
-Book reads are implemented as described below. No Book mutations, Borrow APIs, or authentication are implemented. Keep the required eight business routes at their specified paths; do not add an `/api` prefix to them merely because health uses one.
+Book reads and the authentication foundation are implemented. No Book mutations or Borrow APIs are implemented. Keep the required eight business routes at their specified paths; do not add an `/api` prefix to them merely because health uses one. See [AUTHENTICATION.md](./AUTHENTICATION.md) for the Next.js Better Auth configuration, local environment setup, Google OAuth steps, JWT flow, and verification details.
+
+Better Auth is hosted only by Next.js at `/api/auth/[...all]`. Express verifies its short-lived JWTs using cached public JWKS, EdDSA signature verification, issuer/audience/expiry checks, and trusted `sub`/`email` claims. Identity is attached as `req.user` only after successful verification. The exported auth middleware is not mounted globally; health and the existing public book listing remain public, and the prepared detail router is still deferred.
+
+Express startup validates `AUTH_ISSUER`, `AUTH_AUDIENCE`, and `AUTH_JWKS_URL`. CORS remains restricted to `CLIENT_URL` and the existing allowed headers. Helmet supplies API security headers, and a per-process 300-request/minute limiter excludes health. Rate-limited requests use the catalog's JSON `RATE_LIMITED` response with status 429.
 
 ## Book reads (Phase 4)
 

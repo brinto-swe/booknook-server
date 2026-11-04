@@ -8,6 +8,7 @@ const { createApp } = await import("./app.js");
 const { connectDatabase, closeDatabase } = await import("./config/database.js");
 const { configureDns } = await import("./config/dns.js");
 const { logSafeError } = await import("./config/diagnostics.js");
+const { readAuthConfiguration } = await import("./config/auth.js");
 let server;
 let shuttingDown = false;
 
@@ -76,6 +77,7 @@ process.once("SIGTERM", () => { void shutdown(); });
 async function start() {
   try {
     const port = validateEnvironment();
+    readAuthConfiguration();
     configureDns();
     await connectDatabase();
     if (shuttingDown) return;

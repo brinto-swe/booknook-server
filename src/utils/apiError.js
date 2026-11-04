@@ -6,6 +6,7 @@ const definitions = {
   INVALID_BOOK_DATA: [500, "Stored book data is invalid."],
   INVALID_JSON: [400, "Invalid JSON request body."],
   UNAUTHORIZED: [401, "Authentication required."],
+  RATE_LIMITED: [429, "Too many requests. Please try again later."],
   FORBIDDEN: [403, "Access denied."],
   NOT_FOUND: [404, "Resource not found."],
   ROUTE_NOT_FOUND: [404, "Route not found."],
