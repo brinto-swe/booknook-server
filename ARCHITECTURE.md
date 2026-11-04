@@ -212,3 +212,15 @@ finally { Remove-Item Env:RUN_ATLAS_TRANSACTION_TESTS }
 ```
 
 The opt-in test loads existing environment configuration only inside the test, with dotenv output suppressed. It uses the production transaction/service/repository logic against two uniquely named temporary collections in the configured database. It never edits the real books, borrows, or Better Auth user collections. It verifies commits, snapshot history, UTC dates, the real partial unique index, rollback after both borrow/return writes, last-copy contention, same-user contention, simultaneous/repeated returns and reborrowing. Cleanup drops only its exact created collection names and verifies their absence with equality filters. Atlas rejected an earlier listCollections $in cleanup-verification filter with server code 8000; the test now uses supported exact-name checks. No credentials or raw driver messages are printed.
+
+Final Borrow verification results:
+
+- node --test: 77 discovered tests, 76 passed, 0 failed, 1 intentionally skipped opt-in Atlas test.
+- Explicit opt-in Atlas run: 1 integration test passed, 0 failed; actual transactions, unique-index enforcement, rollback and concurrent operations verified. Temporary collections removed and absence verified. This tests the production service/repository/transaction logic against Atlas, not an end-to-end Better Auth browser session.
+- node --check passed for all JavaScript in src/, test/, and test-support/.
+- git diff --check passed (Git reports only ordinary LF→CRLF working-copy warnings).
+- Live GET /api/health: 200 with application ok/database connected.
+- Live GET /books?page=1&limit=6: 200 with unchanged success/books/pagination envelope.
+- Live anonymous GET /borrows: 401 UNAUTHORIZED.
+
+No known unresolved Borrow module failures. Full deployed/browser-to-API acceptance is outside this backend phase. npm test remains the pre-existing failing placeholder and no server lint script exists; run the real suite using node --test. Pre-existing package/lockfile edits (including the already-installed Multer dependency) were preserved; this phase installs or uses none of them. No commits, frontend changes, real application fixture records, environment changes or authentication changes were made.
